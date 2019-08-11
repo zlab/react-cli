@@ -1,18 +1,23 @@
 {
   "compilerOptions": {
-    "target": "<%- options.useTsWithBabel ? 'es2015' : 'es5' %>",
-    "module": "es2015",
+    "target": "<%- options.useTsWithBabel ? 'esnext' : 'es5' %>",
+    "module": "esnext",
     "strict": true,
+    "jsx": "preserve",
+    "importHelpers": true,
     "moduleResolution": "node",
     <%_ if (options.classComponent) { _%>
     "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
     <%_ } _%>
+    <%_ if (options.allowJs) { _%>
+    "allowJs": true,
+    <%_ } _%>
+    "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "sourceMap": true,
     "baseUrl": ".",
-    <%_if (isTest) { _%>
     "types": [
+      "webpack-env"<% if (hasMocha || hasJest) { %>,<% } %>
       <%_ if (hasMocha) { _%>
       "mocha",
       "chai"
@@ -20,17 +25,24 @@
       "jest"
       <%_ } _%>
     ],
-    <%_ } _%>
     "paths": {
       "@/*": [
         "src/*"
       ]
-    }
+    },
+    "lib": [
+      "esnext",
+      "dom",
+      "dom.iterable",
+      "scripthost"
+    ]
   },
   "include": [
     "src/**/*.ts",
+    "src/**/*.tsx",
     "src/**/*.vue",
-    "test/**/*.ts"
+    "tests/**/*.ts",
+    "tests/**/*.tsx"
   ],
   "exclude": [
     "node_modules"

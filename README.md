@@ -1,54 +1,16 @@
-# vue-cli [![Build Status](https://circleci.com/gh/vuejs/vue-cli/tree/next.svg?style=shield)](https://circleci.com/gh/vuejs/vue-cli/tree/next) [![Windows Build status](https://ci.appveyor.com/api/projects/status/487fqt71e4kf46iv/branch/next?svg=true)](https://ci.appveyor.com/project/yyx990803/vue-cli-6b0a6/branch/next)
+# vue-cli [![Build Status](https://circleci.com/gh/vuejs/vue-cli/tree/dev.svg?style=shield)](https://circleci.com/gh/vuejs/vue-cli/tree/dev) [![Windows Build status](https://ci.appveyor.com/api/projects/status/rkpafdpdwie9lqx0/branch/dev?svg=true)](https://ci.appveyor.com/project/yyx990803/vue-cli/branch/dev) [![lerna](https://img.shields.io/badge/maintained%20with-lerna-cc00ff.svg)](https://lerna.js.org/)
 
-> WIP: this is the work in progress branch of the upcoming vue-cli 3.0.
-> Only for preview for template maintainers.
 
-## Development Setup
+> Vue CLI is the Standard Tooling for Vue.js Development.
 
-This project uses a monorepo setup that requires using [Yarn](https://yarnpkg.com) because it relies on [Yarn workspaces](https://yarnpkg.com/blog/2017/08/02/introducing-workspaces/).
+## Documentation
 
-``` sh
-# install dependencies
-yarn
+Docs are available at https://cli.vuejs.org/ - we are still working on refining it and contributions are welcome!
 
-# link `vue` executable
-# if you have the old vue-cli installed globally, you may
-# need to uninstall it first.
-cd packages/@vue/cli
-yarn link
+## Contributing
 
-# create test projects in /packages/test
-cd -
-cd packages/test
-vue create test-app
-cd test-app
-yarn serve
-```
+Please see [contributing guide](https://github.com/vuejs/vue-cli/blob/dev/.github/CONTRIBUTING.md).
 
-### Testing Tips
+## License
 
-The full test suite is rather slow, because it has a number of e2e tests that perform full webpack builds of actual projects. To narrow down the tests needed to run during development, you can pass a list of packages to the `test` script:
-
-``` sh
-yarn test cli cli-services
-```
-
-If the package is a plugin, you can ommit the `cli-plugin-` prefix:
-
-``` sh
-yarn test typescript
-```
-
-To further narrow down tests, you can also specify your own regex:
-
-``` sh
-yarn test -g <filenameRegex>
-```
-
-You can also pass `--watch` to run tests in watch mode.
-
-Note that `jest --onlyChanged` isn't always accurate because some tests spawn child processes.
-
-### Plugin Development
-
-See [dedicated section in docs](https://github.com/vuejs/vue-cli/tree/next/docs/Plugin.md).
+[MIT](https://github.com/vuejs/vue-cli/blob/dev/LICENSE)

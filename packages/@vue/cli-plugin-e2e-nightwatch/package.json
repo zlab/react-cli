@@ -1,11 +1,12 @@
 {
   "name": "@vue/cli-plugin-e2e-nightwatch",
-  "version": "3.0.0-alpha.4",
+  "version": "4.0.0-beta.3",
   "description": "e2e-nightwatch plugin for vue-cli",
   "main": "index.js",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vuejs/vue-cli.git"
+    "url": "git+https://github.com/vuejs/vue-cli.git",
+    "directory": "packages/@vue/cli-plugin-e2e-nightwatch"
   },
   "keywords": [
     "vue",
@@ -17,15 +18,22 @@
   "bugs": {
     "url": "https://github.com/vuejs/vue-cli/issues"
   },
-  "homepage": "https://github.com/vuejs/vue-cli/packages/@vue/cli-plugin-e2e-nightwatch#readme",
+  "homepage": "https://github.com/vuejs/vue-cli/tree/dev/packages/@vue/cli-plugin-e2e-nightwatch#readme",
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
-    "chromedriver": "^2.35.0",
-    "deepmerge": "^2.0.1",
-    "execa": "^0.9.0",
-    "nightwatch": "^0.9.19",
-    "selenium-server": "^3.8.1"
+    "@vue/cli-shared-utils": "^4.0.0-beta.3",
+    "deepmerge": "^3.2.0",
+    "execa": "^1.0.0",
+    "nightwatch": "^1.1.11",
+    "selenium-server": "^3.141.59"
+  },
+  "devDependencies": {
+    "chromedriver": "^74.0.0"
+  },
+  "peerDependencies": {
+    "@vue/cli-service": "^3.0.0 || ^4.0.0-0",
+    "chromedriver": "*"
   }
 }

@@ -1,23 +1,22 @@
-const execa = require('execa')
 const minimist = require('minimist')
+const rawArgs = process.argv.slice(2)
+const args = minimist(rawArgs)
 
-const args = minimist(process.argv.slice(2))
-
-const packages = args._
-let regex = args.g || args.grep
-if (!regex && packages.length) {
-  regex = `.*@vue/(${packages.join('|')}|cli-plugin-(${packages.join('|')}))/.*\\.spec\\.js$`
+let regex
+if (args.p) {
+  const packages = (args.p || args.package).split(',').join('|')
+  regex = `.*@vue/(${packages}|cli-plugin-(${packages}))/.*\\.spec\\.js$`
+  const i = rawArgs.indexOf('-p')
+  rawArgs.splice(i, 2)
 }
 
-;(async () => {
-  await execa('jest', [
-    '--env', 'node',
-    '--runInBand',
-    ...(regex ? [regex] : [])
-  ], {
-    stdio: 'inherit'
-  })
-})().catch(err => {
-  err
-  process.exit(1)
-})
+const jestArgs = [
+  '--env', 'node',
+  '--runInBand',
+  ...rawArgs,
+  ...(regex ? [regex] : [])
+]
+
+console.log(`running jest with args: ${jestArgs.join(' ')}`)
+
+require('jest').run(jestArgs)

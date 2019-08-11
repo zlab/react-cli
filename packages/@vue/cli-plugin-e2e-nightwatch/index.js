@@ -1,34 +1,43 @@
 module.exports = (api, options) => {
-  api.registerCommand('e2e', {
+  api.registerCommand('test:e2e', {
     description: 'run e2e tests with nightwatch',
-    usage: 'vue-cli-service e2e [options]',
+    usage: 'vue-cli-service test:e2e [options]',
     options: {
       '--url': 'run e2e tests against given url instead of auto-starting dev server',
+      '--config': 'use custom nightwatch config file (overrides internals)',
       '-e, --env': 'specify comma-delimited browser envs to run in (default: chrome)',
-      '-t, --test': 'sepcify a test to run by name',
+      '-t, --test': 'specify a test to run by name',
       '-f, --filter': 'glob to filter tests by filename'
     },
     details:
       `All Nightwatch CLI options are also supported.\n` +
-      `https://github.com/nightwatchjs/nightwatch/blob/master/lib/runner/cli/cli.js`
+      `https://nightwatchjs.org/guide#command-line-options`
   }, (args, rawArgs) => {
-    if (args.url) {
-      const i = rawArgs.findIndex(arg => /^--url/.test(arg))
-      rawArgs = rawArgs.splice(i, 2)
-    }
+    removeArg(rawArgs, 'url')
+    removeArg(rawArgs, 'mode')
 
     const serverPromise = args.url
       ? Promise.resolve({ url: args.url })
-      : api.service.run('serve', { mode: 'production' })
+      : api.service.run('serve')
 
     return serverPromise.then(({ server, url }) => {
       // expose dev server url to tests
       process.env.VUE_DEV_SERVER_URL = url
-      // expose user options to config file
-      process.env.VUE_NIGHTWATCH_USER_OPTIONS = JSON.stringify(options.nightwatch || {})
+      if (rawArgs.indexOf('--config') === -1) {
+        // expose user options to config file
+        const fs = require('fs')
+        let userOptionsPath, userOptions
+        if (fs.existsSync(userOptionsPath = api.resolve('nightwatch.config.js'))) {
+          userOptions = require(userOptionsPath)
+        } else if (fs.existsSync(userOptionsPath = api.resolve('nightwatch.json'))) {
+          userOptions = require(userOptionsPath)
+        }
+        process.env.VUE_NIGHTWATCH_USER_OPTIONS = JSON.stringify(userOptions || {})
 
-      rawArgs.push('--config', require.resolve('./nightwatch.config.js'))
-      if (rawArgs.indexOf('--env') === -1) {
+        rawArgs.push('--config', require.resolve('./nightwatch.config.js'))
+      }
+
+      if (rawArgs.indexOf('--env') === -1 && rawArgs.indexOf('-e') === -1) {
         rawArgs.push('--env', 'chrome')
       }
 
@@ -49,4 +58,17 @@ module.exports = (api, options) => {
       return runner
     })
   })
+}
+
+module.exports.defaultModes = {
+  'test:e2e': 'production'
+}
+
+function removeArg (rawArgs, argToRemove, offset = 1) {
+  const matchRE = new RegExp(`^--${argToRemove}`)
+  const equalRE = new RegExp(`^--${argToRemove}=`)
+  const i = rawArgs.findIndex(arg => matchRE.test(arg))
+  if (i > -1) {
+    rawArgs.splice(i, offset + (equalRE.test(rawArgs[i]) ? 0 : 1))
+  }
 }

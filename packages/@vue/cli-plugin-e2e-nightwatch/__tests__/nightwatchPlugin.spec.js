@@ -1,4 +1,4 @@
-jest.setTimeout(20000)
+jest.setTimeout(40000)
 
 const create = require('@vue/cli-test-utils/createTestProject')
 
@@ -9,5 +9,5 @@ test('should work', async () => {
       '@vue/cli-plugin-e2e-nightwatch': {}
     }
   })
-  await project.run(`vue-cli-service e2e`)
+  await project.run(`vue-cli-service test:e2e`)
 })

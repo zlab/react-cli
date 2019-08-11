@@ -1,21 +1,18 @@
 module.exports = (api, options) => {
-  api.render('./template')
+  api.render('./template', {
+    doesCompile: api.hasPlugin('babel') || api.hasPlugin('typescript')
+  })
+
   api.extendPackage({
     scripts: {
-      'serve': 'vue-cli-service serve' + (
-        // only auto open browser on MacOS where applescript
-        // can avoid dupilcate window opens
-        process.platform === 'darwin'
-          ? ' --open'
-          : ''
-      ),
+      'serve': 'vue-cli-service serve',
       'build': 'vue-cli-service build'
     },
     dependencies: {
-      'vue': '^2.5.13'
+      'vue': '^2.6.10'
     },
     devDependencies: {
-      'vue-template-compiler': '^2.5.13'
+      'vue-template-compiler': '^2.6.10'
     },
     'postcss': {
       'plugins': {
@@ -24,45 +21,41 @@ module.exports = (api, options) => {
     },
     browserslist: [
       '> 1%',
-      'last 2 versions',
-      'not ie <= 8'
+      'last 2 versions'
     ]
   })
-
-  if (options.router) {
-    api.extendPackage({
-      dependencies: {
-        'vue-router': '^3.0.1'
-      }
-    })
-  }
-
-  if (options.vuex) {
-    api.extendPackage({
-      dependencies: {
-        vuex: '^3.0.1'
-      }
-    })
-  }
 
   if (options.cssPreprocessor) {
     const deps = {
       sass: {
-        'node-sass': '^4.7.2',
-        'sass-loader': '^6.0.6'
+        sass: '^1.19.0',
+        'sass-loader': '^7.1.0'
+      },
+      'node-sass': {
+        'node-sass': '^4.12.0',
+        'sass-loader': '^7.1.0'
+      },
+      'dart-sass': {
+        sass: '^1.19.0',
+        'sass-loader': '^7.1.0'
       },
       less: {
-        'less': '^2.7.3',
-        'less-loader': '^4.0.5'
+        'less': '^3.0.4',
+        'less-loader': '^4.1.0'
       },
       stylus: {
         'stylus': '^0.54.5',
-        'stylus-loader': '^3.0.1'
+        'stylus-loader': '^3.0.2'
       }
     }
 
     api.extendPackage({
       devDependencies: deps[options.cssPreprocessor]
     })
+  }
+
+  // additional tooling configurations
+  if (options.configs) {
+    api.extendPackage(options.configs)
   }
 }

@@ -1,7 +1,7 @@
-jest.setTimeout(30000)
+jest.setTimeout(35000)
 
 const path = require('path')
-const { linkBin } = require('@vue/cli-shared-utils')
+const { linkBin } = require('@vue/cli/lib/util/linkBin')
 const create = require('@vue/cli-test-utils/createTestProject')
 
 const runSilently = fn => {
@@ -21,7 +21,7 @@ test('should work', async () => {
         lintOn: 'commit'
       }
     }
-  })
+  }, null, true /* initGit */)
   const { read, write, run } = project
   // should've applied airbnb autofix
   const main = await read('src/main.js')
@@ -61,10 +61,10 @@ test('should work', async () => {
     done = resolve
   })
   // enable lintOnSave
-  await write('vue.config.js', 'module.exports = { lintOnSave: true }')
+  await write('vue.config.js', "module.exports = { lintOnSave: 'default' }")
   // write invalid file
   const app = await read('src/App.vue')
-  const updatedApp = app.replace(/;/g, '')
+  const updatedApp = app.replace(/;/, '')
   await write('src/App.vue', updatedApp)
 
   const server = run('vue-cli-service serve')
@@ -72,19 +72,71 @@ test('should work', async () => {
   let isFirstMsg = true
   server.stdout.on('data', data => {
     data = data.toString()
-    if (data.match(/Failed to compile/)) {
+    if (isFirstMsg) {
       // should fail on start
-      expect(isFirstMsg).toBe(true)
+      expect(data).toMatch(/Failed to compile with \d error/)
       isFirstMsg = false
+
       // fix it
       write('src/App.vue', app)
     } else if (data.match(/Compiled successfully/)) {
-      // should compile on 2nd update
-      expect(isFirstMsg).toBe(false)
+      // should compile on the subsequent update
+      // (note: in CI environment this may not be the exact 2nd update,
+      // so we use data.match as a termination condition rather than a test case)
       server.stdin.write('close')
       done()
     }
   })
 
   await donePromise
+})
+
+test('should not fix with --no-fix option', async () => {
+  const project = await create('eslint-nofix', {
+    plugins: {
+      '@vue/cli-plugin-babel': {},
+      '@vue/cli-plugin-eslint': {
+        config: 'airbnb',
+        lintOn: 'commit'
+      }
+    }
+  })
+  const { read, write, run } = project
+  // should've applied airbnb autofix
+  const main = await read('src/main.js')
+  expect(main).toMatch(';')
+  // remove semicolons
+  const updatedMain = main.replace(/;/g, '')
+  await write('src/main.js', updatedMain)
+
+  // lint with no fix should fail
+  try {
+    await run('vue-cli-service lint --no-fix')
+  } catch (e) {
+    expect(e.code).toBe(1)
+    expect(e.failed).toBeTruthy()
+  }
+
+  // files should not have been fixed
+  expect(await read('src/main.js')).not.toMatch(';')
+})
+
+// #3167, #3243
+test('should not throw when src folder is ignored by .eslintignore', async () => {
+  const project = await create('eslint-ignore', {
+    plugins: {
+      '@vue/cli-plugin-babel': {},
+      '@vue/cli-plugin-eslint': {
+        config: 'airbnb',
+        lintOn: 'commit'
+      }
+    },
+    useConfigFiles: true
+  })
+
+  const { write, run } = project
+  await write('.eslintignore', 'src\n.eslintrc.js')
+
+  // should not throw
+  await run('vue-cli-service lint')
 })

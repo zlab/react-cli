@@ -1,23 +1,15 @@
 module.exports = api => {
   api.extendPackage({
     dependencies: {
-      'register-service-worker': '^1.0.0'
+      'register-service-worker': '^1.6.2'
     }
   })
-
+  api.injectImports(api.entryFile, `import './registerServiceWorker'`)
   api.render('./template')
 
-  api.postProcessFiles(files => {
-    const file = files['src/main.ts']
-      ? 'src/main.ts'
-      : 'src/main.js'
-    const main = files[file]
-    if (main) {
-      // inject import for registerServiceWorker script into main.js
-      const lines = main.split(/\r?\n/g).reverse()
-      const lastImportIndex = lines.findIndex(line => line.match(/^import/))
-      lines[lastImportIndex] += `\nimport './registerServiceWorker'`
-      files[file] = lines.reverse().join('\n')
-    }
-  })
+  if (api.invoking && api.hasPlugin('typescript')) {
+    /* eslint-disable-next-line node/no-extraneous-require */
+    const convertFiles = require('@vue/cli-plugin-typescript/generator/convert')
+    convertFiles(api)
+  }
 }

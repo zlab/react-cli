@@ -1,42 +1,56 @@
 const fs = require('fs')
-const os = require('os')
-const path = require('path')
-const {
-  error,
-  hasYarn,
-  createSchema,
-  validate
-} = require('@vue/cli-shared-utils')
+const cloneDeep = require('lodash.clonedeep')
+const { getRcPath } = require('./util/rcPath')
+const { exit } = require('@vue/cli-shared-utils/lib/exit')
+const { error } = require('@vue/cli-shared-utils/lib/logger')
+const { createSchema, validate } = require('@vue/cli-shared-utils/lib/validate')
 
-const rcPath = exports.rcPath = (
-  process.env.VUE_CLI_CONFIG_PATH ||
-  path.join(os.homedir(), '.vuerc')
-)
+const rcPath = exports.rcPath = getRcPath('.vuerc')
 
-const schema = createSchema(joi => joi.object().keys({
+const presetSchema = createSchema(joi => joi.object().keys({
+  bare: joi.boolean(),
+  useConfigFiles: joi.boolean(),
+  // TODO: Use warn for router and vuex once @hapi/joi v16 releases
   router: joi.boolean(),
+  routerHistoryMode: joi.boolean(),
   vuex: joi.boolean(),
-  cssPreprocessor: joi.string().only(['sass', 'less', 'stylus']),
-  useTaobaoRegistry: joi.boolean(),
-  packageManager: joi.string().only(['yarn', 'npm']),
-  plugins: joi.object().required()
+  cssPreprocessor: joi.string().only(['sass', 'dart-sass', 'node-sass', 'less', 'stylus']),
+  plugins: joi.object().required(),
+  configs: joi.object()
 }))
 
-exports.validate = options => validate(options, schema)
+const schema = createSchema(joi => joi.object().keys({
+  latestVersion: joi.string().regex(/^\d+\.\d+\.\d+(-(alpha|beta|rc)\.\d+)?$/),
+  lastChecked: joi.date().timestamp(),
+  packageManager: joi.string().only(['yarn', 'npm', 'pnpm']),
+  useTaobaoRegistry: joi.boolean(),
+  presets: joi.object().pattern(/^/, presetSchema)
+}))
 
-exports.defaults = {
-  router: false,
-  vuex: false,
+exports.validatePreset = preset => validate(preset, presetSchema, msg => {
+  error(`invalid preset options: ${msg}`)
+})
+
+exports.defaultPreset = {
+  useConfigFiles: false,
   cssPreprocessor: undefined,
-  useTaobaoRegistry: undefined,
-  packageManager: hasYarn ? 'yarn' : 'npm',
   plugins: {
     '@vue/cli-plugin-babel': {},
     '@vue/cli-plugin-eslint': {
       config: 'base',
-      lintOn: ['save', 'commit']
-    },
-    '@vue/cli-plugin-unit-mocha': {}
+      lintOn: ['save']
+    }
+  }
+}
+
+exports.defaults = {
+  lastChecked: undefined,
+  latestVersion: undefined,
+
+  packageManager: undefined,
+  useTaobaoRegistry: undefined,
+  presets: {
+    'default': exports.defaultPreset
   }
 }
 
@@ -49,28 +63,29 @@ exports.loadOptions = () => {
   if (fs.existsSync(rcPath)) {
     try {
       cachedOptions = JSON.parse(fs.readFileSync(rcPath, 'utf-8'))
-      return cachedOptions
     } catch (e) {
       error(
         `Error loading saved preferences: ` +
         `~/.vuerc may be corrupted or have syntax errors. ` +
-        `You may need to delete it and re-run vue-cli in manual mode.\n` +
+        `Please fix/delete it and re-run vue-cli in manual mode.\n` +
         `(${e.message})`,
       )
-      process.exit(1)
+      exit(1)
     }
+    validate(cachedOptions, schema, () => {
+      error(
+        `~/.vuerc may be outdated. ` +
+        `Please delete it and re-run vue-cli in manual mode.`
+      )
+    })
+    return cachedOptions
   } else {
     return {}
   }
 }
 
-exports.saveOptions = (toSave, replace) => {
-  let options
-  if (replace) {
-    options = toSave
-  } else {
-    options = Object.assign(exports.loadOptions(), toSave)
-  }
+exports.saveOptions = toSave => {
+  const options = Object.assign(cloneDeep(exports.loadOptions()), toSave)
   for (const key in options) {
     if (!(key in exports.defaults)) {
       delete options[key]
@@ -86,4 +101,10 @@ exports.saveOptions = (toSave, replace) => {
       `(${e.message})`
     )
   }
+}
+
+exports.savePreset = (name, preset) => {
+  const presets = cloneDeep(exports.loadOptions().presets || {})
+  presets[name] = preset
+  exports.saveOptions({ presets })
 }

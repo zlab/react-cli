@@ -1,34 +1,34 @@
-const fs = require('fs')
+const fs = require('fs-extra')
 const path = require('path')
 const execa = require('execa')
-const { promisify } = require('util')
-const readFile = promisify(fs.readFile)
-const writeFile = promisify(fs.writeFile)
-const mkdirp = promisify(require('mkdirp'))
 
-module.exports = function createTestProject (name, config, cwd) {
+module.exports = function createTestProject (name, preset, cwd, initGit = true) {
+  delete process.env.VUE_CLI_SKIP_WRITE
+
   cwd = cwd || path.resolve(__dirname, '../../test')
-
-  config = Object.assign({
-    packageManager: 'yarn',
-    useTaobaoRegistry: false,
-    plugins: {}
-  }, config)
 
   const projectRoot = path.resolve(cwd, name)
 
   const read = file => {
-    return readFile(path.resolve(projectRoot, file), 'utf-8')
+    return fs.readFile(path.resolve(projectRoot, file), 'utf-8')
   }
 
   const has = file => {
     return fs.existsSync(path.resolve(projectRoot, file))
   }
 
+  if (has(projectRoot)) {
+    console.warn(`An existing test project already exists for ${name}. May get unexpected test results due to project re-use`)
+  }
+
   const write = (file, content) => {
     const targetPath = path.resolve(projectRoot, file)
     const dir = path.dirname(targetPath)
-    return mkdirp(dir).then(() => writeFile(targetPath, content))
+    return fs.ensureDir(dir).then(() => fs.writeFile(targetPath, content))
+  }
+
+  const rm = file => {
+    return fs.remove(path.resolve(projectRoot, file))
   }
 
   const run = (command, args) => {
@@ -46,8 +46,9 @@ module.exports = function createTestProject (name, config, cwd) {
     'create',
     name,
     '--force',
-    '--config',
-    JSON.stringify(config)
+    '--inlinePreset',
+    JSON.stringify(preset),
+    initGit ? '--git' : '--no-git'
   ]
 
   const options = {
@@ -60,6 +61,7 @@ module.exports = function createTestProject (name, config, cwd) {
     has,
     read,
     write,
-    run
+    run,
+    rm
   }))
 }

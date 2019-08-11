@@ -1,100 +1,136 @@
+const path = require('path')
 const chalk = require('chalk')
 const debug = require('debug')
 const execa = require('execa')
-const axios = require('axios')
-const resolve = require('resolve')
 const inquirer = require('inquirer')
+const semver = require('semver')
+const EventEmitter = require('events')
 const Generator = require('./Generator')
 const cloneDeep = require('lodash.clonedeep')
 const sortObject = require('./util/sortObject')
-const installDeps = require('./util/installDeps')
-const clearConsole = require('./util/clearConsole')
+const getVersions = require('./util/getVersions')
+const PackageManager = require('./util/ProjectPackageManager')
+const { clearConsole } = require('./util/clearConsole')
 const PromptModuleAPI = require('./PromptModuleAPI')
 const writeFileTree = require('./util/writeFileTree')
-const formatFeatures = require('./util/formatFeatures')
-const setupDevProject = require('./util/setupDevProject')
+const { formatFeatures } = require('./util/features')
+const loadLocalPreset = require('./util/loadLocalPreset')
+const loadRemotePreset = require('./util/loadRemotePreset')
+const generateReadme = require('./util/generateReadme')
 
 const {
   defaults,
-  validate,
   saveOptions,
-  loadOptions
+  loadOptions,
+  savePreset,
+  validatePreset
 } = require('./options')
 
 const {
   log,
+  warn,
   error,
   hasGit,
+  hasProjectGit,
   hasYarn,
+  hasPnpm3OrLater,
   logWithSpinner,
-  stopSpinner
+  stopSpinner,
+  exit,
+  loadModule
 } = require('@vue/cli-shared-utils')
 
-const isMode = _mode => ({ mode }) => _mode === mode
+const isManualMode = answers => answers.preset === '__manual__'
 
-module.exports = class Creator {
+module.exports = class Creator extends EventEmitter {
   constructor (name, context, promptModules) {
+    super()
+
     this.name = name
     this.context = process.env.VUE_CLI_CONTEXT = context
-    const { modePrompt, featurePrompt } = this.resolveIntroPrompts()
-    this.modePrompt = modePrompt
+    const { presetPrompt, featurePrompt } = this.resolveIntroPrompts()
+    this.presetPrompt = presetPrompt
     this.featurePrompt = featurePrompt
     this.outroPrompts = this.resolveOutroPrompts()
     this.injectedPrompts = []
     this.promptCompleteCbs = []
-    this.createCompleteCbs = []
+    this.afterInvokeCbs = []
+    this.afterAnyInvokeCbs = []
+
+    this.run = this.run.bind(this)
 
     const promptAPI = new PromptModuleAPI(this)
     promptModules.forEach(m => m(promptAPI))
   }
 
-  async create (cliOptions = {}) {
+  async create (cliOptions = {}, preset = null) {
     const isTestOrDebug = process.env.VUE_CLI_TEST || process.env.VUE_CLI_DEBUG
-    const { name, context, createCompleteCbs } = this
-    const run = (command, args) => {
-      if (!args) { [command, ...args] = command.split(/\s+/) }
-      return execa(command, args, { cwd: context })
-    }
+    const { run, name, context, afterInvokeCbs, afterAnyInvokeCbs } = this
 
-    let options
-    if (cliOptions.saved) {
-      options = loadOptions()
-    } else if (cliOptions.default) {
-      options = defaults
-    } else if (cliOptions.config) {
-      try {
-        options = JSON.parse(cliOptions.config)
-      } catch (e) {
-        error(`CLI inline config is not valid JSON: ${cliOptions.config}`)
-        process.exit(1)
+    if (!preset) {
+      if (cliOptions.preset) {
+        // vue create foo --preset bar
+        preset = await this.resolvePreset(cliOptions.preset, cliOptions.clone)
+      } else if (cliOptions.default) {
+        // vue create foo --default
+        preset = defaults.presets.default
+      } else if (cliOptions.inlinePreset) {
+        // vue create foo --inlinePreset {...}
+        try {
+          preset = JSON.parse(cliOptions.inlinePreset)
+        } catch (e) {
+          error(`CLI inline preset is not valid JSON: ${cliOptions.inlinePreset}`)
+          exit(1)
+        }
+      } else {
+        preset = await this.promptAndResolvePreset()
       }
-    } else {
-      options = await this.promptAndResolveOptions()
     }
 
     // clone before mutating
-    options = cloneDeep(options)
+    preset = cloneDeep(preset)
     // inject core service
-    options.plugins['@vue/cli-service'] = Object.assign({
+    preset.plugins['@vue/cli-service'] = Object.assign({
       projectName: name
-    }, options)
+    }, preset)
+
+    if (cliOptions.bare) {
+      preset.plugins['@vue/cli-service'].bare = true
+    }
+
+    // legacy support for router
+    if (preset.router) {
+      preset.plugins['@vue/cli-plugin-router'] = {}
+
+      if (preset.routerHistoryMode) {
+        preset.plugins['@vue/cli-plugin-router'].historyMode = true
+      }
+    }
+
+    // legacy support for vuex
+    if (preset.vuex) {
+      preset.plugins['@vue/cli-plugin-vuex'] = {}
+    }
 
     const packageManager = (
       cliOptions.packageManager ||
-      options.packageManager ||
-      (hasYarn ? 'yarn' : 'npm')
+      loadOptions().packageManager ||
+      (hasYarn() ? 'yarn' : null) ||
+      (hasPnpm3OrLater() ? 'pnpm' : 'npm')
     )
+    const pm = new PackageManager({ context, forcePackageManager: packageManager })
 
-    clearConsole()
+    await clearConsole()
     logWithSpinner(`✨`, `Creating project in ${chalk.yellow(context)}.`)
+    this.emit('creation', { event: 'creating' })
 
     // get latest CLI version
-    let latestCLIVersion
-    if (!isTestOrDebug) {
-      const res = await axios.get(`https://registry.npmjs.org/@vue%2Fcli/`)
-      latestCLIVersion = res.data['dist-tags'].latest
-    } else {
-      latestCLIVersion = require('../package.json').version
+    const { current, latest } = await getVersions()
+    let latestMinor = `${semver.major(latest)}.${semver.minor(latest)}.0`
+
+    // if using `next` branch of cli
+    if (semver.gte(current, latest) && semver.prerelease(current)) {
+      latestMinor = current
     }
     // generate package.json with plugin dependencies
     const pkg = {
@@ -103,10 +139,21 @@ module.exports = class Creator {
       private: true,
       devDependencies: {}
     }
-    const deps = Object.keys(options.plugins)
+    const deps = Object.keys(preset.plugins)
     deps.forEach(dep => {
-      pkg.devDependencies[dep] = `^${latestCLIVersion}`
+      if (preset.plugins[dep]._isPreset) {
+        return
+      }
+
+      // Note: the default creator includes no more than `@vue/cli-*` & `@vue/babel-preset-env`,
+      // so it is fine to only test `@vue` prefix.
+      // Other `@vue/*` packages' version may not be in sync with the cli itself.
+      pkg.devDependencies[dep] = (
+        preset.plugins[dep].version ||
+        ((/^@vue/.test(dep)) ? `^${latestMinor}` : `latest`)
+      )
     })
+
     // write package.json
     await writeFileTree(context, {
       'package.json': JSON.stringify(pkg, null, 2)
@@ -114,8 +161,10 @@ module.exports = class Creator {
 
     // intilaize git repository before installing deps
     // so that vue-cli-service can setup git hooks.
-    if (hasGit) {
+    const shouldInitGit = this.shouldInitGit(cliOptions)
+    if (shouldInitGit) {
       logWithSpinner(`🗃`, `Initializing git repository...`)
+      this.emit('creation', { event: 'git-init' })
       await run('git init')
     }
 
@@ -123,194 +172,349 @@ module.exports = class Creator {
     stopSpinner()
     log(`⚙  Installing CLI plugins. This might take a while...`)
     log()
-    if (isTestOrDebug) {
+    this.emit('creation', { event: 'plugins-install' })
+
+    if (isTestOrDebug && !process.env.VUE_CLI_TEST_DO_INSTALL_PLUGIN) {
       // in development, avoid installation process
-      await setupDevProject(context)
+      await require('./util/setupDevProject')(context)
     } else {
-      await installDeps(context, packageManager, cliOptions.registry)
+      await pm.install()
     }
 
     // run generator
-    log()
     log(`🚀  Invoking generators...`)
-    const plugins = this.resolvePlugins(options.plugins)
-    const generator = new Generator(
-      context,
+    this.emit('creation', { event: 'invoking-generators' })
+    const plugins = await this.resolvePlugins(preset.plugins)
+    const generator = new Generator(context, {
       pkg,
       plugins,
-      createCompleteCbs
-    )
-    await generator.generate()
+      afterInvokeCbs,
+      afterAnyInvokeCbs
+    })
+    await generator.generate({
+      extractConfigFiles: preset.useConfigFiles
+    })
 
     // install additional deps (injected by generators)
     log(`📦  Installing additional dependencies...`)
+    this.emit('creation', { event: 'deps-install' })
     log()
     if (!isTestOrDebug) {
-      await installDeps(context, packageManager, cliOptions.registry)
+      await pm.install()
     }
 
     // run complete cbs if any (injected by generators)
-    log()
     logWithSpinner('⚓', `Running completion hooks...`)
-    for (const cb of createCompleteCbs) {
+    this.emit('creation', { event: 'completion-hooks' })
+    for (const cb of afterInvokeCbs) {
+      await cb()
+    }
+    for (const cb of afterAnyInvokeCbs) {
       await cb()
     }
 
+    // generate README.md
+    stopSpinner()
+    log()
+    logWithSpinner('📄', 'Generating README.md...')
+    await writeFileTree(context, {
+      'README.md': generateReadme(generator.pkg, packageManager)
+    })
+
+    // generate a .npmrc file for pnpm, to persist the `shamefully-flatten` flag
+    if (packageManager === 'pnpm') {
+      await writeFileTree(context, {
+        '.npmrc': 'shamefully-flatten=true\n'
+      })
+    }
+
     // commit initial state
-    if (hasGit) {
+    let gitCommitFailed = false
+    if (shouldInitGit) {
       await run('git add -A')
       if (isTestOrDebug) {
         await run('git', ['config', 'user.name', 'test'])
         await run('git', ['config', 'user.email', 'test@test.com'])
       }
-      await run(`git commit -m init`)
+      const msg = typeof cliOptions.git === 'string' ? cliOptions.git : 'init'
+      try {
+        await run('git', ['commit', '-m', msg])
+      } catch (e) {
+        gitCommitFailed = true
+      }
     }
 
     // log instructions
     stopSpinner()
     log()
     log(`🎉  Successfully created project ${chalk.yellow(name)}.`)
-    log(
-      `👉  Get started with the following commands:\n\n` +
-      chalk.cyan(` ${chalk.gray('$')} cd ${name}\n`) +
-      chalk.cyan(` ${chalk.gray('$')} ${options.packageManager === 'yarn' ? 'yarn serve' : 'npm run serve'}`)
-    )
+    if (!cliOptions.skipGetStarted) {
+      log(
+        `👉  Get started with the following commands:\n\n` +
+        (this.context === process.cwd() ? `` : chalk.cyan(` ${chalk.gray('$')} cd ${name}\n`)) +
+        chalk.cyan(` ${chalk.gray('$')} ${packageManager === 'yarn' ? 'yarn serve' : packageManager === 'pnpm' ? 'pnpm run serve' : 'npm run serve'}`)
+      )
+    }
     log()
+    this.emit('creation', { event: 'done' })
+
+    if (gitCommitFailed) {
+      warn(
+        `Skipped git commit due to missing username and email in git config.\n` +
+        `You will need to perform the initial commit yourself.\n`
+      )
+    }
+
+    generator.printExitLogs()
   }
 
-  async promptAndResolveOptions () {
-    // prompt
-    clearConsole()
-    const answers = await inquirer.prompt(this.resolveFinalPrompts())
-    debug('vue:cli-answers')(answers)
+  run (command, args) {
+    if (!args) { [command, ...args] = command.split(/\s+/) }
+    return execa(command, args, { cwd: this.context })
+  }
 
-    let options
-    if (answers.mode === 'saved') {
-      options = loadOptions()
-    } else if (answers.mode === 'default') {
-      options = defaults
+  async promptAndResolvePreset (answers = null) {
+    // prompt
+    if (!answers) {
+      await clearConsole(true)
+      answers = await inquirer.prompt(this.resolveFinalPrompts())
+    }
+    debug('vue-cli:answers')(answers)
+
+    if (answers.packageManager) {
+      saveOptions({
+        packageManager: answers.packageManager
+      })
+    }
+
+    let preset
+    if (answers.preset && answers.preset !== '__manual__') {
+      preset = await this.resolvePreset(answers.preset)
     } else {
       // manual
-      options = {
-        packageManager: answers.packageManager || loadOptions().packageManager,
+      preset = {
+        useConfigFiles: answers.useConfigFiles === 'files',
         plugins: {}
       }
-      // run cb registered by prompt modules to finalize the options
-      this.promptCompleteCbs.forEach(cb => cb(answers, options))
+      answers.features = answers.features || []
+      // run cb registered by prompt modules to finalize the preset
+      this.promptCompleteCbs.forEach(cb => cb(answers, preset))
     }
 
     // validate
-    validate(options)
+    validatePreset(preset)
 
-    // save options
-    if (answers.mode === 'manual' && answers.save) {
-      saveOptions(options, true /* replace */)
+    // save preset
+    if (answers.save && answers.saveName) {
+      savePreset(answers.saveName, preset)
     }
 
-    debug('vue:cli-options')(options)
-    return options
+    debug('vue-cli:preset')(preset)
+    return preset
+  }
+
+  async resolvePreset (name, clone) {
+    let preset
+    const savedPresets = loadOptions().presets || {}
+
+    if (name in savedPresets) {
+      preset = savedPresets[name]
+    } else if (name.endsWith('.json') || /^\./.test(name) || path.isAbsolute(name)) {
+      preset = await loadLocalPreset(path.resolve(name))
+    } else if (name.includes('/')) {
+      logWithSpinner(`Fetching remote preset ${chalk.cyan(name)}...`)
+      this.emit('creation', { event: 'fetch-remote-preset' })
+      try {
+        preset = await loadRemotePreset(name, clone)
+        stopSpinner()
+      } catch (e) {
+        stopSpinner()
+        error(`Failed fetching remote preset ${chalk.cyan(name)}:`)
+        throw e
+      }
+    }
+
+    // use default preset if user has not overwritten it
+    if (name === 'default' && !preset) {
+      preset = defaults.presets.default
+    }
+    if (!preset) {
+      error(`preset "${name}" not found.`)
+      const presets = Object.keys(savedPresets)
+      if (presets.length) {
+        log()
+        log(`available presets:\n${presets.join(`\n`)}`)
+      } else {
+        log(`you don't seem to have any saved preset.`)
+        log(`run vue-cli in manual mode to create a preset.`)
+      }
+      exit(1)
+    }
+    return preset
   }
 
   // { id: options } => [{ id, apply, options }]
-  resolvePlugins (rawPlugins) {
+  async resolvePlugins (rawPlugins) {
     // ensure cli-service is invoked first
-    rawPlugins = sortObject(rawPlugins, ['@vue/cli-service'])
-    return Object.keys(rawPlugins).map(id => {
-      const module = resolve.sync(`${id}/generator`, { basedir: this.context })
-      return {
-        id,
-        apply: require(module),
-        options: rawPlugins[id]
+    rawPlugins = sortObject(rawPlugins, ['@vue/cli-service'], true)
+    const plugins = []
+    for (const id of Object.keys(rawPlugins)) {
+      const apply = loadModule(`${id}/generator`, this.context) || (() => {})
+      let options = rawPlugins[id] || {}
+      if (options.prompts) {
+        const prompts = loadModule(`${id}/prompts`, this.context)
+        if (prompts) {
+          log()
+          log(`${chalk.cyan(options._isPreset ? `Preset options:` : id)}`)
+          options = await inquirer.prompt(prompts)
+        }
       }
-    })
+      plugins.push({ id, apply, options })
+    }
+    return plugins
+  }
+
+  getPresets () {
+    const savedOptions = loadOptions()
+    return Object.assign({}, savedOptions.presets, defaults.presets)
   }
 
   resolveIntroPrompts () {
-    const defualtFeatures = formatFeatures(defaults)
-    const modePrompt = {
-      name: 'mode',
+    const presets = this.getPresets()
+    const presetChoices = Object.keys(presets).map(name => {
+      return {
+        name: `${name} (${formatFeatures(presets[name])})`,
+        value: name
+      }
+    })
+    const presetPrompt = {
+      name: 'preset',
       type: 'list',
-      message: `Please pick a project creation mode:`,
+      message: `Please pick a preset:`,
       choices: [
-        {
-          name: `Zero-config with defaults (${defualtFeatures})`,
-          value: 'default'
-        },
+        ...presetChoices,
         {
           name: 'Manually select features',
-          value: 'manual'
+          value: '__manual__'
         }
       ]
     }
-    const savedOptions = loadOptions()
-    if (savedOptions.plugins) {
-      const savedFeatures = formatFeatures(savedOptions)
-      modePrompt.choices.unshift({
-        name: `Use previously saved config (${savedFeatures})`,
-        value: 'saved'
-      })
-    }
     const featurePrompt = {
       name: 'features',
-      when: isMode('manual'),
+      when: isManualMode,
       type: 'checkbox',
       message: 'Check the features needed for your project:',
       choices: [],
-      pageSize: 8
+      pageSize: 10
     }
     return {
-      modePrompt,
+      presetPrompt,
       featurePrompt
     }
   }
 
   resolveOutroPrompts () {
-    const outroPrompts = []
-    const savedOptions = loadOptions()
-    if (hasYarn && !savedOptions.packageManager) {
-      outroPrompts.push({
-        name: 'packageManager',
-        when: isMode('manual'),
+    const outroPrompts = [
+      {
+        name: 'useConfigFiles',
+        when: isManualMode,
         type: 'list',
-        message: 'Pick the package manager to use when installing dependencies:',
+        message: 'Where do you prefer placing config for Babel, PostCSS, ESLint, etc.?',
         choices: [
           {
-            name: 'Use Yarn',
-            value: 'yarn',
-            short: 'Yarn'
+            name: 'In dedicated config files',
+            value: 'files'
           },
           {
-            name: 'Use NPM',
-            value: 'npm',
-            short: 'NPM'
+            name: 'In package.json',
+            value: 'pkg'
           }
         ]
+      },
+      {
+        name: 'save',
+        when: isManualMode,
+        type: 'confirm',
+        message: 'Save this as a preset for future projects?',
+        default: false
+      },
+      {
+        name: 'saveName',
+        when: answers => answers.save,
+        type: 'input',
+        message: 'Save preset as:'
+      }
+    ]
+
+    // ask for packageManager once
+    const savedOptions = loadOptions()
+    if (!savedOptions.packageManager && (hasYarn() || hasPnpm3OrLater())) {
+      const packageManagerChoices = []
+
+      if (hasYarn()) {
+        packageManagerChoices.push({
+          name: 'Use Yarn',
+          value: 'yarn',
+          short: 'Yarn'
+        })
+      }
+
+      if (hasPnpm3OrLater()) {
+        packageManagerChoices.push({
+          name: 'Use PNPM',
+          value: 'pnpm',
+          short: 'PNPM'
+        })
+      }
+
+      packageManagerChoices.push({
+        name: 'Use NPM',
+        value: 'npm',
+        short: 'NPM'
+      })
+
+      outroPrompts.push({
+        name: 'packageManager',
+        type: 'list',
+        message: 'Pick the package manager to use when installing dependencies:',
+        choices: packageManagerChoices
       })
     }
-    outroPrompts.push({
-      name: 'save',
-      when: isMode('manual'),
-      type: 'confirm',
-      message: 'Save the preferences for future projects? (You can always manually edit ~/.vuerc)'
-    })
+
     return outroPrompts
   }
 
   resolveFinalPrompts () {
-    // patch generator-injected prompts to only show when mode === 'manual'
+    // patch generator-injected prompts to only show in manual mode
     this.injectedPrompts.forEach(prompt => {
       const originalWhen = prompt.when || (() => true)
-      prompt.when = options => {
-        return options.mode === 'manual' && originalWhen(options)
+      prompt.when = answers => {
+        return isManualMode(answers) && originalWhen(answers)
       }
     })
-    const prompts = [].concat(
-      this.modePrompt,
+    const prompts = [
+      this.presetPrompt,
       this.featurePrompt,
-      this.injectedPrompts,
-      this.outroPrompts
-    )
-    debug('vue:cli-prompts')(prompts)
+      ...this.injectedPrompts,
+      ...this.outroPrompts
+    ]
+    debug('vue-cli:prompts')(prompts)
     return prompts
+  }
+
+  shouldInitGit (cliOptions) {
+    if (!hasGit()) {
+      return false
+    }
+    // --git
+    if (cliOptions.forceGit) {
+      return true
+    }
+    // --no-git
+    if (cliOptions.git === false || cliOptions.git === 'false') {
+      return false
+    }
+    // default: true unless already in a git repo
+    return !hasProjectGit(this.context)
   }
 }

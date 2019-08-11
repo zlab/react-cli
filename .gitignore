@@ -6,3 +6,6 @@ packages/test
 dist
 temp
 .vuerc
+.version
+.versions
+.changelog

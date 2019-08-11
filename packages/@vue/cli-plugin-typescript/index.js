@@ -1,84 +1,100 @@
-module.exports = (api, options) => {
-  const cacheDirectory = api.resolve('node_modules/.cache/cache-loader')
+const path = require('path')
+
+module.exports = (api, projectOptions) => {
+  const fs = require('fs')
+  const useThreads = process.env.NODE_ENV === 'production' && !!projectOptions.parallel
 
   api.chainWebpack(config => {
-    config.entry('app')
-      .clear()
-      .add('./src/main.ts')
+    config.resolveLoader.modules.prepend(path.join(__dirname, 'node_modules'))
+
+    if (!projectOptions.pages) {
+      config.entry('app')
+        .clear()
+        .add('./src/main.ts')
+    }
 
     config.resolve
       .extensions
-        .merge(['.ts', '.tsx'])
+        .prepend('.ts')
+        .prepend('.tsx')
 
-    const tsRule = config.module
-      .rule('ts')
-        .test(/\.tsx?$/)
-        .include
-          .add(api.resolve('src'))
-          .add(api.resolve('test'))
-          .end()
+    const tsRule = config.module.rule('ts').test(/\.ts$/)
+    const tsxRule = config.module.rule('tsx').test(/\.tsx$/)
 
-    if (options.experimentalCompileTsWithBabel) {
-      // Experimental: compile TS with babel so that it can leverage
-      // preset-env for auto-detected polyfills based on browserslists config.
-      // this is pending on the readiness of @babel/preset-typescript.
-      tsRule
-        .use('cache-loader')
-          .loader('cache-loader')
-          .options({ cacheDirectory })
-          .end()
-        .use('babel-loader')
-          .loader('babel-loader')
+    // add a loader to both *.ts & vue<lang="ts">
+    const addLoader = ({ loader, options }) => {
+      tsRule.use(loader).loader(loader).options(options)
+      tsxRule.use(loader).loader(loader).options(options)
+    }
 
-      config.module
-        .rule('vue')
-          .use('vue-loader')
-            .tap(options => {
-              options.loaders.ts = 'babel-loader'
-              return options
-            })
-    } else {
-      if (api.hasPlugin('babel')) {
-        tsRule
-          .use('cache-loader')
-            .loader('cache-loader')
-            .options({ cacheDirectory })
-            .end()
-          .use('babel-loader')
-            .loader('babel-loader')
+    addLoader({
+      loader: 'cache-loader',
+      options: api.genCacheConfig('ts-loader', {
+        'ts-loader': require('ts-loader/package.json').version,
+        'typescript': require('typescript/package.json').version,
+        modern: !!process.env.VUE_CLI_MODERN_BUILD
+      }, 'tsconfig.json')
+    })
+
+    if (useThreads) {
+      addLoader({
+        loader: 'thread-loader',
+        options:
+          typeof projectOptions.parallel === 'number'
+            ? { workers: projectOptions.parallel }
+            : {}
+      })
+    }
+
+    if (api.hasPlugin('babel')) {
+      addLoader({
+        loader: 'babel-loader'
+      })
+    }
+    addLoader({
+      loader: 'ts-loader',
+      options: {
+        transpileOnly: true,
+        appendTsSuffixTo: ['\\.vue$'],
+        // https://github.com/TypeStrong/ts-loader#happypackmode-boolean-defaultfalse
+        happyPackMode: useThreads
       }
-      tsRule
-        .use('cache-loader-2')
-          .loader('cache-loader')
-          .options({ cacheDirectory })
-          .end()
-        .use('ts-loader')
-          .loader('ts-loader')
-          .options({
-            transpileOnly: true,
-            appendTsSuffixTo: [/\.vue$/]
-          })
-    }
+    })
+    // make sure to append TSX suffix
+    tsxRule.use('ts-loader').loader('ts-loader').tap(options => {
+      options = Object.assign({}, options)
+      delete options.appendTsSuffixTo
+      options.appendTsxSuffixTo = ['\\.vue$']
+      return options
+    })
 
-    config
-      .plugin('fork-ts-checker')
-        .use(require('fork-ts-checker-webpack-plugin'), [{
-          vue: true,
-          tslint: options.lintOnSave,
-          formatter: 'codeframe'
-        }])
+    if (!process.env.VUE_CLI_TEST) {
+      // this plugin does not play well with jest + cypress setup (tsPluginE2e.spec.js) somehow
+      // so temporarily disabled for vue-cli tests
+      config
+        .plugin('fork-ts-checker')
+          .use(require('fork-ts-checker-webpack-plugin'), [{
+            vue: true,
+            tslint: projectOptions.lintOnSave !== false && fs.existsSync(api.resolve('tslint.json')),
+            formatter: 'codeframe',
+            // https://github.com/TypeStrong/ts-loader#happypackmode-boolean-defaultfalse
+            checkSyntacticErrors: useThreads
+          }])
+    }
   })
 
-  api.registerCommand('lint', {
-    descriptions: 'lint source files with TSLint',
-    usage: 'vue-cli-service lint [options] [...files]',
-    options: {
-      '--format [formatter]': 'specify formatter (default: codeFrame)',
-      '--no-fix': 'do not fix errors',
-      '--formatters-dir [dir]': 'formatter directory',
-      '--rules-dir [dir]': 'rules directory'
-    }
-  }, args => {
-    return require('./lib/tslint')(args, api)
-  })
+  if (!api.hasPlugin('eslint')) {
+    api.registerCommand('lint', {
+      description: 'lint source files with TSLint',
+      usage: 'vue-cli-service lint [options] [...files]',
+      options: {
+        '--format [formatter]': 'specify formatter (default: codeFrame)',
+        '--no-fix': 'do not fix errors',
+        '--formatters-dir [dir]': 'formatter directory',
+        '--rules-dir [dir]': 'rules directory'
+      }
+    }, args => {
+      return require('./lib/tslint')(args, api)
+    })
+  }
 }
